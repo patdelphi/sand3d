@@ -3,7 +3,7 @@
 前提：你自己已在 Colab 挂载 Drive（drive.mount('/content/drive')）。
 用法：
   1. 上传本文件后运行：!python colab_download_sand3d.py
-  2. token 二选一：设置 Colab 密钥 HF_TOKEN，或运行时粘贴
+  2. token 自动读取 Colab 密钥 HF_TOKEN（需开启 Notebook access），否则读环境变量或提示输入
 
 说明：
   - 直接写入 Drive，断点续传（重跑跳过已存在文件）
@@ -25,9 +25,23 @@ WORKERS = 8                                        # 并发文件数
 # =====================
 
 
+def get_token():
+    """按优先级取 token：Colab 密钥 → 环境变量 → 交互输入。"""
+    try:
+        from google.colab import userdata
+        token = userdata.get("HF_TOKEN")
+        if token:
+            return token
+    except Exception:
+        pass                                   # 非 Colab 环境或未开启 Notebook access
+    token = os.environ.get("HF_TOKEN")
+    if token:
+        return token
+    return getpass.getpass("HF token: ")
+
+
 def main():
-    token = os.environ.get("HF_TOKEN") or getpass.getpass("HF token: ")
-    os.environ["HF_TOKEN"] = token            # 避免匿名请求触发 429 限流
+    os.environ["HF_TOKEN"] = get_token()       # 避免匿名请求触发 429 限流
     print("登录账号:", whoami()["name"])
 
     os.makedirs(DEST_ROOT, exist_ok=True)
