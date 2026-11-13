@@ -10,7 +10,9 @@ import time
 
 from huggingface_hub import snapshot_download
 
-ROOT = r"c:\Users\patde\Documents\GitHub\sand3d\data\sand3d-datasets"
+from sand3d_paths import DATA_ROOT
+
+ROOT = DATA_ROOT
 REPOS = ["sand3d-objaverse", "sand3d-articraft", "sand3d-simready",
          "sand3d-cad", "sand3d-automate"]
 STALL_SECONDS = 600

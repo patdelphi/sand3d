@@ -6,7 +6,9 @@ import time
 import pyarrow.parquet as pq
 import requests
 
-ROOT = r"c:\Users\patde\Documents\GitHub\sand3d\data\sand3d-datasets"
+from sand3d_paths import DATA_ROOT
+
+ROOT = DATA_ROOT
 OUT = r"C:\Users\patde\AppData\Local\Temp\sand3d_usda_test6"
 BASE = "https://hf-mirror.com/datasets/Sandflow/{repo}/resolve/main/{path}"
 

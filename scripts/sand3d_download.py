@@ -8,7 +8,9 @@ import sys
 import time
 import urllib.request
 
-DEST_ROOT = r"c:\Users\patde\Documents\GitHub\sand3d\data\sand3d-datasets"
+from sand3d_paths import DATA_ROOT
+
+DEST_ROOT = DATA_ROOT
 BASE = "https://huggingface.co/datasets/Sandflow/{repo}/resolve/main/{path}"
 
 # (数据集, 相对路径, 预期字节数)

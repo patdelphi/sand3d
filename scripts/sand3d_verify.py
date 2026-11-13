@@ -8,7 +8,9 @@ from collections import defaultdict
 
 import pyarrow.parquet as pq
 
-ROOT = r"c:\Users\patde\Documents\GitHub\sand3d\data\sand3d-datasets"
+from sand3d_paths import DATA_ROOT
+
+ROOT = DATA_ROOT
 EXPECTED = {
     "sand3d-objaverse": 66887,
     "sand3d-cad": 24495,

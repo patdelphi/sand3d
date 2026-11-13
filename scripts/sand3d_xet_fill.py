@@ -3,7 +3,9 @@ import time
 
 from huggingface_hub import snapshot_download
 
-ROOT = r"c:\Users\patde\Documents\GitHub\sand3d\data\sand3d-datasets"
+from sand3d_paths import DATA_ROOT
+
+ROOT = DATA_ROOT
 REPOS = ["sand3d-cad"]          # 本地只补 cad；objaverse 不再本地下载
 
 for repo in REPOS:

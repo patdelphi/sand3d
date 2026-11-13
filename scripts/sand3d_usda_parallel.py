@@ -13,7 +13,9 @@ import pyarrow.parquet as pq
 import requests
 from huggingface_hub import get_token
 
-ROOT = r"c:\Users\patde\Documents\GitHub\sand3d\data\sand3d-datasets"
+from sand3d_paths import DATA_ROOT
+
+ROOT = DATA_ROOT
 BASE = "https://huggingface.co/datasets/Sandflow/{repo}/resolve/main/{path}"
 WORKERS = 64
 TOKEN = os.environ.get("HF_TOKEN") or get_token()   # 登录后的 token，避免匿名限流

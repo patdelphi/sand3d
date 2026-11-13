@@ -3,7 +3,9 @@ import os
 
 import pyarrow.parquet as pq
 
-ROOT = r"c:\Users\patde\Documents\GitHub\sand3d\data\sand3d-datasets"
+from sand3d_paths import DATA_ROOT
+
+ROOT = DATA_ROOT
 OUT = r"C:\Users\patde\AppData\Local\Temp\sand3d_samples"
 WANT = {
     "sand3d-objaverse": None,
