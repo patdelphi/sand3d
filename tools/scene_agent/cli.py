@@ -25,15 +25,17 @@ def main(argv=None):
     ap.add_argument("--samples", type=int, default=32, help="Cycles 采样数（默认 32）")
     ap.add_argument("--out", help="输出根目录（默认 out/scene/scenes）")
     ap.add_argument("--clip", action="store_true", help="用 CLIP 向量重排检索候选（需先建向量库）")
+    ap.add_argument("--seed", type=int, default=None, help="采样种子，相同种子便于复现布局（默认随机并记入 meta）")
     args = ap.parse_args(argv)
     prompt = " ".join(args.prompt).strip()
     if not prompt:
         ap.print_help()
         return 2
     result = run(prompt, rounds=args.rounds, width=args.width, samples=args.samples, out_root=args.out,
-                 use_clip=args.clip)
-    print(json.dumps({k: result[k] for k in ("scene_id", "dir", "scene", "blend", "glb", "preview")},
-                     ensure_ascii=False, indent=2))
+                 use_clip=args.clip, seed=args.seed)
+    out = {k: result[k] for k in ("scene_id", "dir", "scene", "blend", "glb", "preview")}
+    out["seed"] = (result["layout"].get("meta") or {}).get("seed")   # 便于事后用同一种子重放
+    print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
 

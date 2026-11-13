@@ -6,6 +6,7 @@ LLM 只在三处出现：
   3. 看渲染图，给结构化修改动作
 所有几何与碰撞都由本地代码负责，模型不写代码、不直接改场景。
 """
+import copy
 import json
 import os
 import re
@@ -14,7 +15,7 @@ from datetime import datetime
 
 from . import SCENE_DIR
 from . import builder, render, search
-from .llm import Chat
+from .llm import Chat, extract_json
 from .rebuild import ensure
 
 SYSTEM = (
@@ -49,9 +50,13 @@ LAYOUT_PROMPT = """为下列物体在房间里排布坐标。
 5. 落地灯放在沙发端头或角落，不挡通道。
 6. 主要通道（房间中央）至少留 600mm 宽。
 7. 物体之间不要挤在一起，分布要均衡。
+8. 能放在别的物体上的小件（电脑/显示器/台灯/书本）必须给 "on" 字段，值为支撑物的
+   "label#instance"（如 "书桌#1"），坐标仍按俯视中心给，本地会把高度设为支撑物顶面；
+   没有合适的支撑物就省略该字段，物体落地。
 
 只输出 JSON：
-{{"items": [{{"label": "沙发", "instance": 1, "x": 中心x, "y": 中心y, "rot_z": 0, "scale": 1.0}}],
+{{"items": [{{"label": "沙发", "instance": 1, "x": 中心x, "y": 中心y, "rot_z": 0, "scale": 1.0}},
+            {{"label": "电脑", "instance": 1, "x": 中心x, "y": 中心y, "rot_z": 0, "scale": 1.0, "on": "书桌#1"}}],
   "reason": "一句话说明布局思路"}}
 """
 
@@ -204,6 +209,7 @@ def make_layout(chat, room, items):
     prompt = LAYOUT_PROMPT.format(w=room["w"], d=room["d"], h=room["h"], objects=_object_lines(items))
     layout = {"room": room, "items": _merge(items, chat.json(prompt, SYSTEM, temperature=0.3, max_tokens=1200))}
     builder.clamp(layout["items"], room)
+    builder.resolve_support(layout["items"])
     issues = builder.validate(layout["items"], room)
     if issues:
         _log(f"布局校验问题：{issues}")
@@ -213,6 +219,7 @@ def make_layout(chat, room, items):
             w=room["w"], d=room["d"])
         layout["items"] = _merge(items, chat.json(repair, SYSTEM, temperature=0.3, max_tokens=1200))
         builder.clamp(layout["items"], room)
+        builder.resolve_support(layout["items"])
         issues = builder.validate(layout["items"], room)
         _log(f"修正后问题：{issues or '无'}")
     if issues:
@@ -245,6 +252,7 @@ def _merge(items, reply):
             "x": float(raw.get("x", 0)), "y": float(raw.get("y", 0)),
             "rot_z": int(round(float(raw.get("rot_z", 0)))) % 360,
             "scale": float(raw.get("scale") or 1.0),
+            **({"on": str(raw["on"])} if raw.get("on") else {}),
         })
     # LLM 漏掉的条目补一个靠墙默认位，保证不丢物体
     for it in items:
@@ -283,16 +291,56 @@ def apply_actions(layout, actions):
 
 
 def _item_lines(items):
-    """给 critic 看的当前摆放。"""
+    """给 critic 看的当前摆放（含高度与支撑关系）。"""
     return "\n".join(
         f"- {it['label']}#{it['instance']} 位置({it['x']:.0f},{it['y']:.0f}) 旋转{it['rot_z']}度 "
-        f"缩放{it.get('scale', 1.0):.2f} 占地{it['bbox']['w']:.0f}x{it['bbox']['d']:.0f}"
+        f"缩放{it.get('scale', 1.0):.2f} 占地{it['bbox']['w']:.0f}x{it['bbox']['d']:.0f} "
+        f"高{it['bbox']['h'] * it.get('scale', 1.0):.0f} 底面z={it.get('z', 0):.0f}"
+        + (f" 放在{it['on']}上" if it.get("on") else "")
         for it in items)
 
 
-def run(prompt, rounds=3, width=768, samples=32, out_root=None, chat=None, use_clip=False):
-    """完整流程。返回结果字典（含产物路径）。"""
+def review_scene(chat, layout, room, png):
+    """把渲染图 + 当前布局回喂多模态模型，返回结构化评审。"""
+    issues = builder.validate(layout["items"], room)
+    prompt = CRITIC_PROMPT.format(
+        w=room["w"], d=room["d"], items=_item_lines(layout["items"]),
+        issues="\n".join(issues) or "无")
+    if png and os.path.exists(png):
+        text = chat.vision(png, prompt, SYSTEM, max_tokens=700)
+    else:
+        text = chat.text(prompt, SYSTEM, temperature=0.2, max_tokens=700, json_mode=True)
+    return extract_json(text)
+
+
+def apply_review(layout, review, room):
+    """应用评审动作，并在引入新冲突时回滚。
+
+    返回 (改动数, 原因)：原因取 ok / done / noop / rejected。
+    回滚规则：原来没有校验问题、改完出现问题时，视为评审方案不可用。
+    """
+    if review.get("done") or not review.get("actions"):
+        return 0, "done"
+    before = copy.deepcopy(layout["items"])
+    changed = apply_actions(layout, review["actions"])
+    if not changed:
+        return 0, "noop"
+    builder.clamp(layout["items"], room)
+    builder.resolve_support(layout["items"])
+    if not builder.validate(before, room) and builder.validate(layout["items"], room):
+        layout["items"] = before
+        return 0, "rejected"
+    return changed, "ok"
+
+
+def run(prompt, rounds=3, width=768, samples=32, out_root=None, chat=None, use_clip=False,
+        env=None, seed=None):
+    """完整流程。返回结果字典（含产物路径）。env 控制墙色/地色/光照强度；seed 固定采样便于复现。"""
+    import random
     chat = chat or Chat()
+    # 未指定种子时随机生成并记录，保证每个场景事后都能用同一 seed 重放
+    seed = int(seed) if seed is not None else random.randint(1, 2 ** 31 - 1)
+    chat.seed = seed
     out_root = out_root or SCENE_DIR
     scene_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     work = os.path.join(out_root, scene_id)
@@ -306,37 +354,41 @@ def run(prompt, rounds=3, width=768, samples=32, out_root=None, chat=None, use_c
     if not items:
         raise RuntimeError("没有找到任何可用组件")
     layout = make_layout(chat, room, items)
+    layout["env"] = {**builder.DEFAULT_ENV, **(env or {})}
+    # 归档元数据：用于追溯这次结果由哪个模型、什么参数生成
+    import bpy
+    layout["meta"] = {
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "model": getattr(chat, "model", ""),
+        "rounds": rounds, "width": width, "samples": samples,
+        "clip": bool(use_clip), "bpy": bpy.app.version_string,
+        "seed": seed,
+    }
 
     builder.build_scene(layout)
     # 每轮构建后写 live.blend，供 Blender GUI 联动脚本轮询
     builder.export_scene(os.path.join(work, "live.blend"))
-    scene = render.setup(room, "iso", width, width, samples)
+    scene = render.setup(room, "iso", width, width, samples, env=layout.get("env"))
     png, secs = render.render(os.path.join(work, "preview_1.png"), scene)
     _log(f"渲染完成：{os.path.basename(png)}（{secs}s）")
 
     history = []
     for rnd in range(1, rounds + 1):
-        issues = builder.validate(layout["items"], room)
-        text = chat.text(CRITIC_PROMPT.format(
-            w=room["w"], d=room["d"], items=_item_lines(layout["items"]),
-            issues="\n".join(issues) or "无"), SYSTEM, temperature=0.2, max_tokens=700, json_mode=True)
         try:
-            from .llm import extract_json
-            review = extract_json(text)
+            review = review_scene(chat, layout, room, png)
         except Exception as exc:
             _log(f"视觉评审解析失败，停止迭代：{exc}")
             history.append({"round": rnd, "error": str(exc)})
             break
         history.append({"round": rnd, "review": review})
         _log(f"第 {rnd} 轮评审：done={review.get('done')} reason={review.get('reason', '')[:80]}")
-        if review.get("done") or not review.get("actions"):
+        changed, why = apply_review(layout, review, room)
+        if why != "ok":
+            _log(f"评审动作未采用（{why}）")
             break
-        if apply_actions(layout, review["actions"]) == 0:
-            break
-        builder.clamp(layout["items"], room)
         builder.build_scene(layout)
         builder.export_scene(os.path.join(work, "live.blend"))
-        scene = render.setup(room, "iso", width, width, samples)
+        scene = render.setup(room, "iso", width, width, samples, env=layout.get("env"))
         png, secs = render.render(os.path.join(work, f"preview_{rnd + 1}.png"), scene)
         _log(f"重渲染：{os.path.basename(png)}（{secs}s）")
 

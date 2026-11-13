@@ -69,6 +69,7 @@ class Chat:
         self.model = env.get("AI_MODEL_1_1_NAME", "")
         if not (self.base and self.key and self.model):
             raise RuntimeError("缺少 AI_PROVIDER_1_BASE_URL / API_KEY / AI_MODEL_1_1_NAME")
+        self.seed = None   # 采样种子：设了就在每次请求里带上，便于复现同一布局
 
     def _post(self, payload, timeout=120, retries=2):
         """POST /chat/completions，失败重试一次。"""
@@ -100,6 +101,8 @@ class Chat:
                    "enable_thinking": False}   # 关闭思维链，延迟从 ~200s 降到几秒
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if self.seed is not None:
+            payload["seed"] = int(self.seed)
         return self._post(payload)
 
     def json(self, prompt, system=None, temperature=0.2, max_tokens=1500):
@@ -127,4 +130,6 @@ class Chat:
         payload = {"model": self.model, "messages": messages,
                    "temperature": 0.2, "max_tokens": max_tokens,
                    "enable_thinking": False}
+        if self.seed is not None:
+            payload["seed"] = int(self.seed)
         return self._post(payload, timeout=180)

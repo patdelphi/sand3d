@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>场景 Agent · 自然语言布置房间</title>
+<!-- 3D 预览：model-viewer，加载失败时降级为下载链接 -->
+<script type="module" src="https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js"></script>
+<style>
+  /* 深色为默认，浅色通过 body.light 覆盖；整页固定视口高度，不出现页面滚动 */
+  :root {
+    --bg: #111317; --panel: #191c21; --panel-2: #1f232a; --line: #2b3038;
+    --ink: #e4e6ea; --muted: #8b929e; --accent: #3fbf9f; --accent-ink: #08211b;
+    --warn: #f08a5d; --log-bg: #0c0e11; --viewer-bg: #16191e;
+  }
+  body.light {
+    --bg: #f2f1ee; --panel: #fff; --panel-2: #f6f5f2; --line: #dcd8d0;
+    --ink: #23201c; --muted: #7a746c; --accent: #2f6f5f; --accent-ink: #fff;
+    --warn: #b4542f; --log-bg: #1e1c19; --viewer-bg: #e7e4dd;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 12.5px/1.45 "Segoe UI", "Microsoft YaHei", sans-serif;
+         display: flex; flex-direction: column; }
+  header { flex: 0 0 40px; display: flex; align-items: center; gap: 10px;
+           padding: 0 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: .4px; white-space: nowrap; }
+  header .sub { color: var(--muted); font-size: 11px; }
+  header .spacer { flex: 1; }
+  main { flex: 1; min-height: 0; display: grid; grid-template-columns: 322px minmax(0, 1fr);
+         gap: 8px; padding: 8px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+           padding: 8px; min-height: 0; }
+  .left { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .right { display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 200px);
+           gap: 8px; min-width: 0; min-height: 0; }
+  .media { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; min-height: 0; }
+  .caption { font-size: 11px; color: var(--muted); margin-bottom: 4px; display: flex;
+             justify-content: space-between; gap: 6px; }
+  label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+  input, select, textarea, button {
+    font: inherit; color: var(--ink); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 6px; }
+  textarea { width: 100%; height: 62px; padding: 6px 8px; resize: none; }
+  #history { width: auto; max-width: 150px; font-size: 11px; padding: 1px 4px; }
+  input, select { width: 100%; padding: 3px 6px; }
+  input[type=checkbox] { width: auto; margin: 0 4px 0 0; vertical-align: -1px; }
+  button { padding: 5px 10px; cursor: pointer; background: var(--accent);
+           color: var(--accent-ink); border: 0; font-weight: 600; }
+  button.ghost { background: var(--panel-2); color: var(--ink); border: 1px solid var(--line);
+                 font-weight: 400; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .row { display: flex; gap: 6px; }
+  .row > * { flex: 1; min-width: 0; }
+  .actions { display: flex; gap: 6px; }
+  .actions button { flex: 1; }
+  .inline { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+  #status { font-size: 11px; color: var(--muted); min-height: 15px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #log { flex: 1; min-height: 60px; margin: 0; padding: 6px 8px; overflow: auto;
+         background: var(--log-bg); color: #cdd3da; border-radius: 6px;
+         font: 11px/1.5 Consolas, "Cascadia Mono", monospace; white-space: pre-wrap; }
+  .frame { position: relative; flex: 1 1 auto; min-height: 120px; background: var(--viewer-bg);
+           border-radius: 6px; overflow: hidden; }
+  /* 绝对定位填满容器：父级高度由 flex 决定，直接用 height:100% 会塌成 0 */
+  #preview, #viewer { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #preview { object-fit: contain; }
+  .empty { position: absolute; inset: 0; display: flex; align-items: center;
+           justify-content: center; color: var(--muted); font-size: 11px; }
+  .tablewrap { overflow: auto; min-height: 0; max-height: calc(100% - 26px); }
+  table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  th, td { text-align: left; padding: 2px 4px; border-bottom: 1px solid var(--line);
+           white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--panel); }
+  td input { padding: 1px 4px; }
+  .tag { color: var(--muted); margin-left: 4px; }
+  .ok { color: var(--accent); }
+  .bad { color: var(--warn); }
+  #issues { font-size: 11px; margin-top: 4px; height: 15px; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  #dl { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #scenes { max-width: 210px; font-size: 11px; }
+  .head-actions { display: flex; align-items: center; gap: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>场景 Agent</h1>
+  <span class="sub">一句话生成房间 · 可微调 · 可再评审</span>
+  <span class="spacer"></span>
+  <div class="head-actions">
+    <select id="scenes" title="载入已有场景"><option value="">载入已有场景…</option></select>
+    <button id="theme" class="ghost" title="切换深色/浅色">浅色</button>
+  </div>
+</header>
+
+<main>
+  <!-- 左栏：输入 + 日志 -->
+  <section class="left">
+    <div class="panel" style="padding:8px">
+      <div class="inline">
+        <label for="prompt" style="margin:0">场景描述</label>
+        <span style="flex:1"></span>
+        <select id="history" title="历史描述"><option value="">历史描述…</option></select>
+      </div>
+      <textarea id="prompt">布置一个 4x5 米的客厅，有沙发、茶几和落地灯</textarea>
+      <div class="row" style="margin-top:6px">
+        <div><label for="rounds">轮数</label>
+          <input id="rounds" type="number" min="0" max="3" value="2"></div>
+        <div><label for="width">分辨率</label>
+          <select id="width"><option>640</option><option selected>768</option><option>960</option></select></div>
+        <div><label for="samples">采样</label>
+          <select id="samples"><option>16</option><option selected>24</option><option>32</option></select></div>
+        <div style="flex:.9"><label for="seed">种子</label>
+          <input id="seed" type="number" placeholder="随机" title="相同种子可复现同一布局；留空随机"></div>
+      </div>
+      <div class="inline" style="margin-top:6px">
+        <input id="clip" type="checkbox"><span>CLIP 重排候选</span>
+        <span style="flex:1"></span>
+        <span>墙</span><input id="wall" type="color" value="#d0d0ce" title="墙面颜色">
+        <span>地</span><input id="floor" type="color" value="#6f4a2e" title="地板颜色">
+      </div>
+      <div class="inline" style="margin-top:6px">
+        <span>光照</span>
+        <input id="light" type="range" min="300" max="3000" step="100" value="600"
+               style="flex:1;padding:0" title="布光强度">
+        <span id="lightval" style="width:38px;text-align:right">600</span>
+      </div>
+      <div class="actions" style="margin-top:6px">
+        <button id="run">生成场景</button>
+        <button id="rerun" class="ghost" disabled>再评审一轮</button>
+        <button id="reproduce" class="ghost" disabled title="按 scene.json 纯本地重建，不调 LLM">原样重渲染</button>
+        <button id="cancel" class="ghost" style="display:none" title="终止当前任务">取消</button>
+      </div>
+      <div id="status" style="margin-top:4px">就绪</div>
+    </div>
+    <pre id="log">等待任务…</pre>
+  </section>
+
+  <!-- 右栏：预览 + 组件 -->
+  <section class="right">
+    <div class="media">
+      <div class="panel" style="display:flex; flex-direction:column">
+        <div class="caption"><span>渲染预览</span><span id="meta"></span></div>
+        <div class="frame"><img id="preview" alt="渲染预览"><div class="empty" id="pempty">还没有渲染结果</div></div>
+      </div>
+      <div class="panel" style="display:flex; flex-direction:column">
+        <div class="caption"><span>3D 视图 · 拖动旋转</span><span id="dl"></span></div>
+        <div class="frame"><model-viewer id="viewer" camera-controls auto-rotate
+          shadow-intensity="0.6" exposure="1.0"></model-viewer><div class="empty" id="vempty">无 glb</div></div>
+      </div>
+    </div>
+
+    <div class="panel" style="display:flex; flex-direction:column">
+      <div class="caption" style="margin-bottom:4px">
+        <span>组件 · 坐标 mm / 角度 度 / 原点在左下角</span>
+        <button id="apply" style="padding:3px 8px">应用修改并重渲染</button>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>标签</th><th>名称</th><th>X</th><th>Y</th><th>旋转</th><th>缩放</th><th>许可</th></tr></thead>
+          <tbody id="items"></tbody>
+        </table>
+      </div>
+      <div id="issues" class="ok">无场景</div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let current = null;
+let jobId = null;
+let timer = null;
+let original = {};
+
+/* ---------- 主题（默认深色，记忆选择） ---------- */
+function setTheme(light) {
+  document.body.classList.toggle('light', light);
+  $('theme').textContent = light ? '深色' : '浅色';
+  localStorage.setItem('scene-theme', light ? 'light' : 'dark');
+}
+setTheme(localStorage.getItem('scene-theme') === 'light');
+$('theme').addEventListener('click', () => setTheme(!document.body.classList.contains('light')));
+
+function log(line) {
+  const el = $('log');
+  el.textContent += (el.textContent ? '\n' : '') + line;
+  el.scrollTop = el.scrollHeight;
+}
+
+function setBusy(busy, text) {
+  $('run').disabled = busy;
+  $('apply').disabled = busy || !current;
+  $('rerun').disabled = busy || !current;
+  $('reproduce').disabled = busy || !current;
+  $('cancel').style.display = busy ? '' : 'none';
+  $('status').textContent = text;
+}
+
+async function api(path, body) {
+  const opt = body ? { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                       body: JSON.stringify(body) } : {};
+  const res = await fetch(path, opt);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+async function startJob(path, body) {
+  $('log').textContent = '';
+  try {
+    const data = await api(path, body);
+    jobId = data.job;
+    setBusy(true, '任务运行中…');
+    timer = setInterval(poll, 1200);
+  } catch (err) {
+    setBusy(false, '启动失败'); log('启动失败：' + err.message);
+  }
+}
+
+async function poll() {
+  if (!jobId) return;
+  try {
+    const job = await api('/api/job?id=' + jobId);
+    if (job.logs) {
+      $('log').textContent = job.logs.join('\n');
+      $('log').scrollTop = $('log').scrollHeight;
+    }
+    if (job.status === 'running') return;
+    clearInterval(timer); timer = null;
+    if (job.status === 'done') {
+      setBusy(false, '完成');
+      applyResult(job.result);
+      loadScenes();
+      loadPrompts();
+    } else {
+      setBusy(false, '失败'); log('任务失败：' + (job.error || '未知错误'));
+    }
+  } catch (err) { log('轮询失败：' + err.message); }
+}
+
+function currentEnv() {
+  return { wall: $('wall').value, floor: $('floor').value, light: Number($('light').value) };
+}
+
+function syncEnv(env) {
+  if (!env) return;
+  if (env.wall) $('wall').value = env.wall;
+  if (env.floor) $('floor').value = env.floor;
+  if (env.light) { $('light').value = env.light; $('lightval').textContent = env.light; }
+}
+
+$('light').addEventListener('input', () => { $('lightval').textContent = $('light').value; });
+
+$('cancel').addEventListener('click', async () => {
+  try {
+    await api('/api/cancel', {});
+    $('status').textContent = '正在取消…';
+  } catch (err) { $('status').textContent = '取消失败：' + err.message; }
+});
+
+function applyResult(r) {
+  if (!r) return;
+  current = r.scene_id;
+  syncEnv(r.env);
+  const stamp = '?t=' + Date.now();
+  $('preview').src = r.preview_url + stamp;
+  $('pempty').style.display = 'none';
+  $('viewer').src = r.glb_url + stamp;
+  $('vempty').style.display = 'none';
+  $('dl').innerHTML = '下载 <a href="' + r.glb_url + '" download>glb</a>' +
+    ' · <a href="/files/' + r.scene_id + '/room.blend" download>blend</a>' +
+    ' · <a href="/files/' + r.scene_id + '/scene.json" download>json</a>';
+  $('meta').textContent = r.scene_id + (r.render_s ? ' · ' + r.render_s + 's' : '')
+    + (r.seed ? ' · seed ' + r.seed : '');
+  renderItems(r.items || []);
+  const issues = r.issues || [];
+  $('issues').className = issues.length ? 'bad' : 'ok';
+  $('issues').textContent = issues.length
+    ? '校验问题：' + issues.join('；')
+    : '校验通过：无越界、无重叠';
+  $('issues').title = $('issues').textContent;
+  $('rerun').disabled = false;
+  $('apply').disabled = false;
+}
+
+function renderItems(items) {
+  const tbody = $('items');
+  tbody.innerHTML = '';
+  original = {};
+  items.forEach((it, i) => {
+    original[i] = { x: it.x, y: it.y, rot_z: it.rot_z, scale: it.scale };
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + it.label + '<span class="tag">#' + it.instance + '</span></td>' +
+      '<td title="' + (it.component_id || '') + '">' + (it.name || it.component_id || '').slice(0, 22) + '</td>' +
+      '<td><input data-k="x" data-i="' + i + '" value="' + Math.round(it.x) + '"></td>' +
+      '<td><input data-k="y" data-i="' + i + '" value="' + Math.round(it.y) + '"></td>' +
+      '<td><input data-k="rot_z" data-i="' + i + '" value="' + it.rot_z + '"></td>' +
+      '<td><input data-k="scale" data-i="' + i + '" value="' + it.scale + '"></td>' +
+      '<td class="tag">' + (it.license || '-') + '</td>';
+    tbody.appendChild(tr);
+  });
+}
+
+/* 收集被改过的单元格，按 (label, instance) 归并 */
+$('apply').addEventListener('click', () => {
+  if (!current) return;
+  const rows = document.querySelectorAll('#items tr');
+  const items = [];
+  document.querySelectorAll('#items input').forEach((inp) => {
+    const idx = Number(inp.dataset.i), key = inp.dataset.k, val = Number(inp.value);
+    if (!Number.isFinite(val) || val === original[idx][key]) return;
+    const cell = rows[idx].children[0];
+    const label = cell.textContent.replace(/#\d+$/, '');
+    const instance = Number((cell.querySelector('.tag').textContent.match(/\d+/) || [1])[0]);
+    let row = items.find((o) => o.label === label && o.instance === instance);
+    if (!row) { row = { label, instance }; items.push(row); }
+    row[key] = val;
+  });
+  if (!items.length) { $('status').textContent = '没有修改'; return; }
+  startJob('/api/adjust', { scene: current, items, width: Number($('width').value),
+                            samples: Number($('samples').value), env: currentEnv() });
+});
+
+$('rerun').addEventListener('click', () => {
+  if (!current) return;
+  startJob('/api/rerun', { scene: current, width: Number($('width').value),
+                           samples: Number($('samples').value) });
+});
+
+$('reproduce').addEventListener('click', () => {
+  if (!current) return;
+  startJob('/api/reproduce', { scene: current, width: Number($('width').value),
+                               samples: Number($('samples').value) });
+});
+
+$('run').addEventListener('click', () => {
+  const prompt = $('prompt').value.trim();
+  if (!prompt) { $('status').textContent = '请先输入场景描述'; return; }
+  const seed = $('seed').value.trim();   // 留空则后端随机，并在结果里回传实际种子
+  startJob('/api/run', { prompt, rounds: Number($('rounds').value),
+                         width: Number($('width').value), samples: Number($('samples').value),
+                         clip: $('clip').checked, env: currentEnv(),
+                         seed: seed ? Number(seed) : null });
+});
+
+async function loadScenes() {
+  try {
+    const data = await api('/api/scenes');
+    const sel = $('scenes');
+    const keep = current || sel.value;
+    sel.innerHTML = '<option value="">载入已有场景…</option>';
+    data.scenes.slice(0, 30).forEach((s) => {
+      const opt = document.createElement('option');
+      opt.value = s.scene;
+      opt.textContent = s.scene + ' · ' + s.items + ' 件';
+      opt.title = s.prompt || '';
+      sel.appendChild(opt);
+    });
+    if (keep) sel.value = keep;
+  } catch (err) { /* 列表失败不影响主流程 */ }
+}
+
+$('scenes').addEventListener('change', (e) => { if (e.target.value) openScene(e.target.value); });
+
+async function openScene(name) {
+  try {
+    const res = await fetch('/files/' + name + '/scene.json');
+    const layout = await res.json();
+    const previewName = (layout.preview || '').split(/[\\/]/).pop();
+    applyResult({
+      scene_id: name,
+      preview_url: '/files/' + name + '/' + previewName,
+      glb_url: '/files/' + name + '/room.glb',
+      issues: layout.issues || [],
+      env: layout.env || {},
+      items: layout.items.map((it) => ({
+        label: it.label, instance: it.instance, component_id: it.component_id,
+        name: it.name, license: it.license, x: it.x, y: it.y,
+        rot_z: it.rot_z, scale: it.scale })),
+    });
+    $('status').textContent = '已载入 ' + name;
+  } catch (err) { $('status').textContent = '载入失败：' + err.message; }
+}
+
+async function loadPrompts() {
+  try {
+    const data = await api('/api/prompts');
+    const sel = $('history');
+    sel.innerHTML = '<option value="">历史描述…</option>';
+    (data.prompts || []).forEach((p) => {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p.length > 40 ? p.slice(0, 40) + '…' : p;
+      opt.title = p;
+      sel.appendChild(opt);
+    });
+  } catch (err) { /* 历史加载失败不影响生成 */ }
+}
+
+$('history').addEventListener('change', () => {
+  const picked = $('history').value;
+  if (picked) {
+    $('prompt').value = picked;
+    $('history').value = '';
+    $('prompt').focus();
+  }
+});
+
+loadScenes();
+loadPrompts();
+</script>
+</body>
+</html>

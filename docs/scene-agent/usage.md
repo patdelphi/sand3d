@@ -63,6 +63,7 @@ $env:PYTHONPATH="src"
 | `--samples` | 32 | Cycles 采样数（CPU） |
 | `--out` | `out/scene/scenes` | 产物根目录 |
 | `--clip` | 关 | 用 CLIP 向量对关键词候选重排（需先建向量库） |
+| `--seed` | 随机 | LLM 采样种子；显式指定便于复现同一布局，未指定时随机并写入 `scene.json.meta.seed` |
 
 产物目录 `out/scene/scenes/<时间戳>/`：`scene.json`、`room.blend`、`room.glb`、`preview_N.png`，
 每轮构建还会写 `live.blend`（供 GUI 联动）。
@@ -70,7 +71,49 @@ $env:PYTHONPATH="src"
 `scene.json` 里每个组件带 `component_id`、`name`、`family`、`license`、`bbox`、坐标与旋转，
 以及 `issues`（校验结果）和 `review_history`（每轮视觉评审）。
 
-## 5. 单独使用各模块
+## 5. 网页 UI（推荐测试用）
+
+```powershell
+$env:PYTHONPATH="src"
+.venv\Scripts\python -m tools.scene_agent.server --port 8787
+```
+
+浏览器打开 `http://127.0.0.1:8787`，页面能力：
+
+| 区域 | 功能 |
+|---|---|
+| 左侧 | 输入场景描述、选轮数/分辨率/采样/种子、是否用 CLIP 重排 |
+| 日志 | 实时显示检索、重建、渲染、评审过程 |
+| 已有场景 | 点任意一条载入历史场景 |
+| 渲染预览 | 当前轮次的 PNG |
+| 3D 视图 | `room.glb` 在线旋转（依赖 model-viewer CDN，失败可下载后本地看） |
+| 组件表 | 改 X/Y/旋转/缩放后点「应用修改并重渲染」 |
+| 历史描述 | 下拉选以往描述回填输入框；每次生成自动记录，重复内容不重复入库，最多保留 50 条 |
+| 环境 | 墙色、地色取色器 + 光照强度滑杆，随生成/微调一起保存到 `scene.json.env` |
+| 再评审一轮 | 用当前坐标重渲染并让多模态模型评审、应用修改 |
+| 原样重渲染 | 只读 `scene.json` 纯本地重建，不调 LLM；同参数下渲染结果与上次逐像素一致 |
+
+默认环境：淡灰墙 `#d0d0ce`、棕色地板 `#6f4a2e`、布光强度 600（见 `builder.DEFAULT_ENV`）。
+渲染走 AgX 色彩变换，实际画面会比色值偏亮，可下调光照滑杆。
+
+`seed` 会随每次 LLM 请求（解析、选型、布局、评审）提交，并归档到 `scene.json.meta.seed`；
+同一个 seed 通常能复现同一套组件与坐标，但服务端采样只保证「尽力一致」。
+需要严格逐像素复现时，用「原样重渲染」（`/api/reproduce`）直接重放已归档的布局。
+
+界面固定单屏（不出现页面滚动），默认深色主题，右上角「浅色/深色」切换会记在浏览器本地。
+
+实现方式：仅标准库 `http.server` + 单页 HTML；重活（bpy）交给 `jobs.py` 子进程，
+同一时间只允许一个任务，页面每 1.2 秒轮询日志。单个任务墙钟上限 600 秒，超时自动强杀；
+运行中可点「取消」。每个任务的完整日志落在 `out/scene/logs/<job_id>.log`，排查失败先看这里。接口：
+
+- `POST /api/run` `{prompt, rounds, width, samples, clip, env, seed}`（env: `{wall, floor, light}`；seed 可省略或传 null）
+- `POST /api/adjust` `{scene, items:[{label, instance, x, y, rot_z, scale}], width, samples}`
+- `POST /api/rerun` `{scene, width, samples}`（会调 LLM 评审一轮）
+- `POST /api/reproduce` `{scene, width, samples}`（纯本地重建，等价 `jobs rerun --no-review`）
+- `POST /api/cancel` 取消当前任务（强杀子进程，日志保留）
+- `GET /api/job?id=`、`GET /api/scenes`、`GET /api/prompts`、`GET /files/<scene>/<file>`
+
+## 5.1 单独使用各模块
 
 ```powershell
 # 只检索
@@ -102,8 +145,13 @@ $env:PYTHONPATH="src"
 - 坐标：房间左下角为原点，X 向右、Y 向上（俯视），单位毫米，角度为度，地面 z=0。
 - 组件正面统一假设 +Y；靠 y=0 墙 rot_z=0，靠 y=d 墙 rot_z=180，靠 x=0 墙 rot_z=90，靠 x=w 墙 rot_z=270。
 - 组件归一化：包围盒 XY 居中、最低点落地。
-- 冲突判定：XY 平面 AABB 相交超过 5mm；边界容差 5mm，越界由 `clamp` 自动夹回。
+- 摆位：每个组件挂在一个枢轴空物体上，枢轴原点位于包围盒底面中心，平移/旋转/缩放都作用于枢轴，
+  因此旋转围绕自身中心，不会甩出房间或陷入地面。
+- 支撑关系：布局条目可带 `"on": "书桌#1"`，本地把它的底面高度设为支撑物顶面（`z`），
+  只允许一层；离开支撑物 XY 范围时自动失效并落地。
+- 冲突判定：XY 平面 AABB 相交超过 5mm **且** Z 区间也相交才算穿插；叠放（如电脑在桌上）合法。
 - 兜底：LLM 布局两次仍越界/重叠时，改用「按面积沿墙排序摆放」的确定性布局。
+- 评审保护：视觉评审给出的坐标若把原本合法的布局改成越界/重叠，动作整体回滚，场景保持上一版。
 
 ## 7. 已知限制
 
@@ -131,6 +179,9 @@ tools/scene_agent/
 ├── agent.py       主循环
 ├── clipidx.py     CLIP 图像向量（建库 / 语义检索 / 重排）
 ├── blender_live.py Blender GUI 视口联动（轮询 live.blend）
+├── server.py      本地网页 UI 服务（标准库）
+├── jobs.py        UI 后台任务子进程（run / adjust / rerun）
+├── web/index.html UI 单页
 ├── verify.py      产物验收（布局、许可证、分辨率）
 └── cli.py         命令行入口
 ```

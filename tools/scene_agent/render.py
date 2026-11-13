@@ -42,7 +42,7 @@ def add_camera(room, preset="iso", lens=35):
     return cam
 
 
-def add_lights(room, energy=1200.0):
+def add_lights(room, energy=1200.0, world_color=None):
     """三点布光：主光 / 补光 / 轮廓光，外加低强度环境光。"""
     import bpy
     w = room["w"] / 1000.0
@@ -67,16 +67,19 @@ def add_lights(room, energy=1200.0):
     world.use_nodes = True
     bg = world.node_tree.nodes.get("Background")
     if bg:
-        bg.inputs["Color"].default_value = (0.92, 0.92, 0.95, 1.0)
+        bg.inputs["Color"].default_value = (*world_color, 1.0) if world_color else (0.92, 0.92, 0.95, 1.0)
         bg.inputs["Strength"].default_value = 0.35
 
 
-def setup(room, preset="iso", width=768, height=768, samples=32):
-    """相机 + 灯光 + Cycles CPU 参数。"""
+def setup(room, preset="iso", width=768, height=768, samples=32, env=None):
+    """相机 + 灯光 + Cycles CPU 参数；env 可调墙色/地色/光照强度。"""
     import bpy
+    from .builder import _hex_color
+    env = env or {}
     scene = bpy.context.scene
     add_camera(room, preset)
-    add_lights(room)
+    add_lights(room, energy=float(env.get("light") or 1200.0),
+               world_color=_hex_color(env.get("sky"), (0.92, 0.92, 0.95)))
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
     scene.cycles.samples = samples
