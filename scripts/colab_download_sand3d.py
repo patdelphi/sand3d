@@ -45,8 +45,8 @@ def main():
     print("登录账号:", whoami()["name"])
 
     os.makedirs(DEST_ROOT, exist_ok=True)
-    free = shutil.disk_usage(DEST_ROOT).free / 2**30
-    print(f"Drive 剩余空间 {free:.1f} GiB")
+    # 注意：Colab 上 disk_usage 读的是虚拟机磁盘，不是 Drive 配额，故不打印空间
+    print("目标目录:", DEST_ROOT, "（请确认是已挂载的目标账号）")
 
     for repo in REPOS:
         dest = os.path.join(DEST_ROOT, repo)
